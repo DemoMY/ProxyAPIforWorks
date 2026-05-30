@@ -3,12 +3,15 @@ import type {
   ChatRequest, KeyCheckResult, Provider, ProviderKind, UpstreamResponse,
 } from "./base.js";
 import { classifyHttpError } from "./base.js";
+import type { ModelMap } from "./model-aliases.js";
 
 export type OpenAICompatConfig = {
   kind: ProviderKind;
   displayName: string;
   baseUrl: string;
   defaultModels: string[];
+  defaultModelMap: ModelMap;
+  defaultFallbackModel: string;
   requiresAuth?: boolean;
   extraHeaders?: () => Record<string, string>;
 };
@@ -25,6 +28,8 @@ export function makeOpenAIProvider(cfg: OpenAICompatConfig): Provider {
     displayName: cfg.displayName,
     baseUrl: cfg.baseUrl,
     defaultModels: cfg.defaultModels,
+    defaultModelMap: cfg.defaultModelMap,
+    defaultFallbackModel: cfg.defaultFallbackModel,
 
     async checkKey(apiKey: string, dispatcher?: Dispatcher): Promise<KeyCheckResult> {
       try {

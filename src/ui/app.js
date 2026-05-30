@@ -105,6 +105,7 @@ async function loadProviders() {
   for (const p of providers) {
     const div = document.createElement("div");
     div.className = "provider-card";
+    const mapJson = JSON.stringify(p.model_map ?? {}, null, 2);
     div.innerHTML = `
       <h3>${escape(p.displayName)} <span class="muted" style="font-weight: normal; font-size: 13px;">priority ${p.priority}</span></h3>
       <form class="add-key" data-provider="${p.id}">
@@ -124,11 +125,55 @@ async function loadProviders() {
           <button class="danger" data-key-id="${k.id}" style="margin-left: auto;">×</button>
         </div>
       `).join("")}
+
+      <details class="model-map" style="margin-top: 16px;">
+        <summary style="cursor: pointer; color: #8b949e; font-size: 13px;">Маппинг моделей (${Object.keys(p.model_map || {}).length} записей)</summary>
+        <form class="save-models" data-provider="${p.id}" style="display: block; margin-top: 8px;">
+          <p class="hint" style="margin: 4px 0;">JSON: <code>"входящее имя": "реальная модель провайдера"</code></p>
+          <textarea name="model_map" rows="10" style="width: 100%; font-family: monospace; font-size: 12px; padding: 8px; background: #0d1117; color: #e6edf3; border: 1px solid #30363d; border-radius: 6px;">${escape(mapJson)}</textarea>
+          <div style="display: flex; gap: 8px; margin-top: 8px; align-items: center;">
+            <label class="muted" style="font-size: 13px;">Fallback model:</label>
+            <input name="fallback_model" value="${escape(p.fallback_model || "")}" style="flex: 1; min-width: 200px;" />
+            <button type="submit">Сохранить</button>
+          </div>
+        </form>
+        <div class="result" data-mapresult="${p.id}"></div>
+      </details>
+
       <div style="margin-top: 12px; display: flex; gap: 8px;">
         <button class="danger" data-delete-provider="${p.id}">Удалить провайдера</button>
       </div>`;
     root.appendChild(div);
   }
+
+  root.querySelectorAll("form.save-models").forEach((form) => {
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const providerId = form.dataset.provider;
+      const fd = new FormData(form);
+      const out = root.querySelector(`[data-mapresult="${providerId}"]`);
+      let modelMap;
+      try {
+        modelMap = JSON.parse(fd.get("model_map") || "{}");
+      } catch (err) {
+        showResult(out, false, "Невалидный JSON: " + err.message);
+        return;
+      }
+      try {
+        await api(`/api/providers/${providerId}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            model_map: modelMap,
+            fallback_model: fd.get("fallback_model") || null,
+          }),
+        });
+        showResult(out, true, "✓ Сохранено");
+        await loadProviders();
+      } catch (err) {
+        showResult(out, false, err.message);
+      }
+    });
+  });
 
   root.querySelectorAll("form.add-key").forEach((form) => {
     form.addEventListener("submit", async (e) => {

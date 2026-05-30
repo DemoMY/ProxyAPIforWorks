@@ -20,6 +20,8 @@ const ProviderInput = z.object({
   priority: z.number().int().optional(),
   proxy_id: z.string().nullable().optional(),
   enabled: z.boolean().optional(),
+  model_map: z.record(z.string(), z.string()).optional(),
+  fallback_model: z.string().nullable().optional(),
 });
 
 const KeyInput = z.object({
@@ -108,6 +110,7 @@ export function registerAdminApi(
   app.get("/api/providers", async () => {
     const rows = db.prepare(`SELECT * FROM providers ORDER BY priority ASC`).all() as Array<{
       id: string; kind: ProviderKind; enabled: number; priority: number; proxy_id: string | null;
+      model_map: string | null; fallback_model: string | null;
     }>;
     return {
       providers: rows.map((r) => {
@@ -120,9 +123,16 @@ export function registerAdminApi(
             last_check_at: number | null; last_error: string | null;
             uses_total: number; key_encrypted: string;
           }>;
+        let modelMap: Record<string, string> = {};
+        if (r.model_map) {
+          try { modelMap = JSON.parse(r.model_map) as Record<string, string>; } catch {}
+        }
         return {
           id: r.id, kind: r.kind, displayName: p.displayName,
           enabled: !!r.enabled, priority: r.priority, proxy_id: r.proxy_id,
+          model_map: modelMap,
+          fallback_model: r.fallback_model ?? p.defaultFallbackModel,
+          default_models: p.defaultModels,
           keys: keys.map((k) => ({
             id: k.id, label: k.label, status: k.status,
             last_check_at: k.last_check_at, last_error: k.last_error,
@@ -139,13 +149,17 @@ export function registerAdminApi(
       reply.code(400);
       return { error: `provider not implemented yet: ${input.kind}` };
     }
+    const impl = getProvider(input.kind);
     const id = randomUUID();
     db.prepare(
-      `INSERT INTO providers (id, kind, enabled, priority, proxy_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO providers (id, kind, enabled, priority, proxy_id, model_map, fallback_model, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id, input.kind, input.enabled === false ? 0 : 1,
-      input.priority ?? 100, input.proxy_id ?? null, Date.now(),
+      input.priority ?? 100, input.proxy_id ?? null,
+      JSON.stringify(input.model_map ?? impl.defaultModelMap),
+      input.fallback_model ?? impl.defaultFallbackModel,
+      Date.now(),
     );
     reply.code(201);
     return { id };
@@ -159,6 +173,8 @@ export function registerAdminApi(
     if (input.enabled !== undefined) { sets.push("enabled = ?"); vals.push(input.enabled ? 1 : 0); }
     if (input.priority !== undefined) { sets.push("priority = ?"); vals.push(input.priority); }
     if (input.proxy_id !== undefined) { sets.push("proxy_id = ?"); vals.push(input.proxy_id); }
+    if (input.model_map !== undefined) { sets.push("model_map = ?"); vals.push(JSON.stringify(input.model_map)); }
+    if (input.fallback_model !== undefined) { sets.push("fallback_model = ?"); vals.push(input.fallback_model); }
     if (sets.length === 0) return { ok: true };
     vals.push(id);
     db.prepare(`UPDATE providers SET ${sets.join(", ")} WHERE id = ?`).run(...vals);

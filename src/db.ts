@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS providers (
   enabled         INTEGER NOT NULL DEFAULT 1,
   priority        INTEGER NOT NULL DEFAULT 100,
   proxy_id        TEXT REFERENCES proxies(id) ON DELETE SET NULL,
+  model_map       TEXT,
+  fallback_model  TEXT,
   created_at      INTEGER NOT NULL
 );
 
@@ -54,7 +56,15 @@ export function openDb(path: string): DB {
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrate(db);
   return db;
+}
+
+function migrate(db: DB): void {
+  const cols = db.prepare(`PRAGMA table_info(providers)`).all() as Array<{ name: string }>;
+  const have = new Set(cols.map((c) => c.name));
+  if (!have.has("model_map")) db.exec(`ALTER TABLE providers ADD COLUMN model_map TEXT`);
+  if (!have.has("fallback_model")) db.exec(`ALTER TABLE providers ADD COLUMN fallback_model TEXT`);
 }
 
 export function getSetting(db: DB, key: string): string | null {

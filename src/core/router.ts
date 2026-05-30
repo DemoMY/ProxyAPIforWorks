@@ -5,6 +5,7 @@ import { KeyPool, parseRetryAfter } from "./keypool.js";
 import { getProvider } from "../providers/registry.js";
 import type { ChatRequest, ProviderKind, UpstreamResponse } from "../providers/base.js";
 import { createDispatcher } from "../proxy/dispatcher.js";
+import { resolveModelName, type ModelMap } from "../providers/model-aliases.js";
 
 type ProviderRow = {
   id: string;
@@ -12,6 +13,8 @@ type ProviderRow = {
   enabled: number;
   priority: number;
   proxy_id: string | null;
+  model_map: string | null;
+  fallback_model: string | null;
 };
 
 type ProxyRow = {
@@ -64,9 +67,17 @@ export class Router {
 
   private listProviders(): ProviderRow[] {
     return this.db
-      .prepare(`SELECT id, kind, enabled, priority, proxy_id FROM providers
-                WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
+      .prepare(`SELECT id, kind, enabled, priority, proxy_id, model_map, fallback_model
+                FROM providers WHERE enabled = 1 ORDER BY priority ASC, created_at ASC`)
       .all() as ProviderRow[];
+  }
+
+  private resolveModel(prov: ProviderRow, requested: string): string {
+    let map: ModelMap | null = null;
+    if (prov.model_map) {
+      try { map = JSON.parse(prov.model_map) as ModelMap; } catch {}
+    }
+    return resolveModelName(requested, map, prov.fallback_model);
   }
 
   async route(req: ChatRequest, signal?: AbortSignal): Promise<RouteResult> {
@@ -80,12 +91,13 @@ export class Router {
       const provider = getProvider(prov.kind);
       const dispatcher = this.getDispatcher(prov.proxy_id);
       const keys = this.pool.listAliveByProvider(prov.id, Date.now());
+      const resolvedReq: ChatRequest = { ...req, model: this.resolveModel(prov, req.model) };
 
       for (const key of keys) {
         const apiKey = this.pool.decrypt(key);
         let resp: UpstreamResponse;
         try {
-          resp = await provider.chatCompletion(req, apiKey, dispatcher, signal);
+          resp = await provider.chatCompletion(resolvedReq, apiKey, dispatcher, signal);
         } catch (err) {
           attempts.push({
             providerId: prov.id, providerKind: prov.kind, keyId: key.id,

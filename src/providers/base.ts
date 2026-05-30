@@ -1,4 +1,5 @@
 import type { Dispatcher } from "undici";
+import type { ModelMap } from "./model-aliases.js";
 
 export type ProviderKind = "nvidia" | "openrouter" | "groq" | "together" | "ollama";
 
@@ -24,6 +25,8 @@ export interface Provider {
   displayName: string;
   baseUrl: string;
   defaultModels: string[];
+  defaultModelMap: ModelMap;
+  defaultFallbackModel: string;
 
   checkKey(apiKey: string, dispatcher?: Dispatcher): Promise<KeyCheckResult>;
 
