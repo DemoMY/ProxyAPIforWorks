@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>llm-gate</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header>
+    <h1>llm-gate</h1>
+    <nav>
+      <button data-tab="proxies" class="active">Proxies</button>
+      <button data-tab="providers">Providers</button>
+      <button data-tab="about">About</button>
+    </nav>
+  </header>
+
+  <main>
+    <section id="tab-proxies" class="tab active">
+      <h2>Прокси</h2>
+      <p class="hint">Для России: добавьте свой VPS, платный прокси или локальный SOCKS5 от VPN-клиента.
+        Поддерживаются <code>http://</code>, <code>https://</code>, <code>socks5://</code>, <code>socks5h://</code> (с DNS через прокси — рекомендуется).</p>
+
+      <form id="proxy-form">
+        <input name="name" placeholder="Имя (например: My VPS Germany)" required />
+        <input name="url" placeholder="socks5h://user:pass@host:port" required />
+        <button type="submit">Добавить и проверить</button>
+      </form>
+      <div id="proxy-form-result" class="result"></div>
+
+      <table id="proxies-table">
+        <thead><tr>
+          <th>Имя</th><th>URL</th><th>Тип</th><th>Статус</th><th>Страна</th><th>IP</th><th>Лат., мс</th><th></th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="tab-providers" class="tab">
+      <h2>Провайдеры и ключи</h2>
+
+      <form id="provider-form">
+        <select name="kind" required></select>
+        <select name="proxy_id"><option value="">Без прокси</option></select>
+        <input name="priority" type="number" value="100" min="1" max="999" />
+        <button type="submit">Добавить провайдера</button>
+      </form>
+      <div id="provider-form-result" class="result"></div>
+
+      <div id="providers-list"></div>
+    </section>
+
+    <section id="tab-about" class="tab">
+      <h2>О llm-gate</h2>
+      <p>OpenAI-совместимый локальный прокси для бесплатных LLM-провайдеров с поддержкой HTTP/SOCKS-прокси,
+        авто-ротацией ключей и health-check'ами.</p>
+      <p>Документация: <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a></p>
+      <h3>Endpoint для инструментов</h3>
+      <pre><code>OPENAI_BASE_URL=http://127.0.0.1:8082/v1
+OPENAI_API_KEY=any</code></pre>
+    </section>
+  </main>
+
+  <script src="./app.js" type="module"></script>
+</body>
+</html>
