@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import fastifyStatic from "@fastify/static";
 import fastifyCors from "@fastify/cors";
 import { fileURLToPath } from "node:url";
@@ -22,18 +22,47 @@ export type ServerHandles = {
   health: HealthChecker;
 };
 
+const HEALTH_PATHS = new Set(["/health", "/api/health"]);
+
+function makeAuthHook(token: string | null) {
+  if (!token) return null;
+  return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
+    if (HEALTH_PATHS.has(req.url.split("?")[0]!)) return;
+    if (req.method === "OPTIONS") return;
+    const auth = req.headers["authorization"];
+    const provided =
+      typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")
+        ? auth.slice(7).trim()
+        : (req.headers["x-api-key"] as string | undefined)?.trim();
+    if (provided !== token) {
+      reply.code(401);
+      await reply.send({ error: { type: "unauthorized", message: "invalid or missing auth token" } });
+    }
+  };
+}
+
 export async function startServer(cfg: AppConfig, db: DB): Promise<ServerHandles> {
   const box = SecretBox.loadOrCreate(cfg.masterKeyPath);
   const pool = new KeyPool(db, box);
   const router = new Router(db, box, pool);
   const health = new HealthChecker(db, box, cfg.healthCheckIntervalMs);
 
-  const proxyApp = Fastify({ logger: { level: "info" }, bodyLimit: 8 * 1024 * 1024 });
+  const authHook = makeAuthHook(cfg.authToken);
+
+  const proxyApp = Fastify({
+    logger: { level: process.env.LLM_GATE_LOG_LEVEL ?? "info" },
+    bodyLimit: 16 * 1024 * 1024,
+  });
   await proxyApp.register(fastifyCors, { origin: true });
+  if (authHook) proxyApp.addHook("onRequest", authHook);
   registerProxyApi(proxyApp, router);
 
-  const uiApp = Fastify({ logger: { level: "info" }, bodyLimit: 1 * 1024 * 1024 });
+  const uiApp = Fastify({
+    logger: { level: process.env.LLM_GATE_LOG_LEVEL ?? "info" },
+    bodyLimit: 1 * 1024 * 1024,
+  });
   await uiApp.register(fastifyCors, { origin: true });
+  if (authHook) uiApp.addHook("onRequest", authHook);
   registerAdminApi(uiApp, db, box, router, health);
 
   const uiRoot = resolveUiRoot();

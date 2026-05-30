@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.github
+.idea
+.vscode
+*.log
+.env
+.env.local
+.llm-gate
+data
+*.sqlite*
+README.md
+CHANGELOG.md

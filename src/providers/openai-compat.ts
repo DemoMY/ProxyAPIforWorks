@@ -4,6 +4,7 @@ import type {
 } from "./base.js";
 import { classifyHttpError } from "./base.js";
 import type { ModelMap } from "./model-aliases.js";
+import { withTimeout } from "../util/signals.js";
 
 export type OpenAICompatConfig = {
   kind: ProviderKind;
@@ -15,6 +16,9 @@ export type OpenAICompatConfig = {
   requiresAuth?: boolean;
   extraHeaders?: () => Record<string, string>;
 };
+
+const DEFAULT_UPSTREAM_TIMEOUT_MS = Number(process.env.LLM_GATE_UPSTREAM_TIMEOUT_MS ?? 120_000);
+const KEY_CHECK_TIMEOUT_MS = 10_000;
 
 export function makeOpenAIProvider(cfg: OpenAICompatConfig): Provider {
   const needsAuth = cfg.requiresAuth !== false;
@@ -35,7 +39,7 @@ export function makeOpenAIProvider(cfg: OpenAICompatConfig): Provider {
       try {
         const res = await fetch(`${cfg.baseUrl}/models`, {
           headers: { ...authHeader(apiKey), ...(cfg.extraHeaders?.() ?? {}) },
-          signal: AbortSignal.timeout(10_000),
+          signal: AbortSignal.timeout(KEY_CHECK_TIMEOUT_MS),
           dispatcher,
         } as RequestInit & { dispatcher?: Dispatcher });
         if (res.ok) return { ok: true };
@@ -60,7 +64,7 @@ export function makeOpenAIProvider(cfg: OpenAICompatConfig): Provider {
           ...(cfg.extraHeaders?.() ?? {}),
         },
         body: JSON.stringify(req),
-        signal,
+        signal: withTimeout(signal, DEFAULT_UPSTREAM_TIMEOUT_MS),
         dispatcher,
       } as RequestInit & { dispatcher?: Dispatcher });
       return { status: res.status, headers: res.headers, body: res.body };

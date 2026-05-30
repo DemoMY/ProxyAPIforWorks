@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - name: Smoke-test built artifact
+        run: |
+          LLM_GATE_DATA_DIR=/tmp/llm-gate-ci node dist/cli.js &
+          SERVER_PID=$!
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:8082/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -sf http://127.0.0.1:8082/health
+          curl -sf http://127.0.0.1:7777/api/health
+          kill $SERVER_PID
