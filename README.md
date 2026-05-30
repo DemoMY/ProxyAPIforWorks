@@ -2,7 +2,7 @@
 
 Self-hosted локальный прокси для бесплатных LLM-провайдеров с поддержкой HTTP/SOCKS-прокси на каждый провайдер, авто-ротацией ключей и health-check'ами. Делает один OpenAI-совместимый эндпоинт, к которому подключаются Claude Code, Cursor, Hermes и любые другие совместимые инструменты.
 
-> **Статус:** ранний скелет. Сейчас работает 1 провайдер (NVIDIA NIM) end-to-end. OpenRouter / Groq / Together / Ollama — следующим коммитом по шаблону.
+> **Статус:** ранняя версия. Реализованы NVIDIA NIM / OpenRouter / Groq / Together AI / Ollama. Поддерживаются OpenAI-совместимый эндпоинт `/v1/chat/completions` и Anthropic-совместимый `/v1/messages` (текст, system, tools, стриминг) — Claude Code подключается через `ANTHROPIC_BASE_URL`.
 
 ## Зачем
 
@@ -80,12 +80,13 @@ src/
 
 ## Roadmap
 
-- [ ] OpenRouter / Groq / Together / Ollama провайдеры (по шаблону `nvidia.ts`)
-- [ ] Anthropic `/v1/messages` ↔ OpenAI translator (для Claude Code)
+- [x] OpenRouter / Groq / Together / Ollama провайдеры
+- [x] Anthropic `/v1/messages` ↔ OpenAI translator (для Claude Code)
 - [ ] Drag-and-drop приоритетов провайдеров в UI
 - [ ] Стриминг SSE: e2e-тест через прокси
 - [ ] Импорт системного `HTTPS_PROXY` / `ALL_PROXY` при первом запуске
 - [ ] Пресеты моделей: «Код» / «Чат» / «Перевод» с авто-маппингом
+- [ ] Маппинг моделей Anthropic (claude-3-5-sonnet → ...) на конкретные модели провайдеров
 
 ## Лицензия
 

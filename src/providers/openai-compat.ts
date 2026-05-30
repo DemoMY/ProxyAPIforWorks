@@ -1,0 +1,64 @@
+import type { Dispatcher } from "undici";
+import type {
+  ChatRequest, KeyCheckResult, Provider, ProviderKind, UpstreamResponse,
+} from "./base.js";
+import { classifyHttpError } from "./base.js";
+
+export type OpenAICompatConfig = {
+  kind: ProviderKind;
+  displayName: string;
+  baseUrl: string;
+  defaultModels: string[];
+  requiresAuth?: boolean;
+  extraHeaders?: () => Record<string, string>;
+};
+
+export function makeOpenAIProvider(cfg: OpenAICompatConfig): Provider {
+  const needsAuth = cfg.requiresAuth !== false;
+
+  function authHeader(apiKey: string): Record<string, string> {
+    return needsAuth ? { Authorization: `Bearer ${apiKey}` } : {};
+  }
+
+  return {
+    kind: cfg.kind,
+    displayName: cfg.displayName,
+    baseUrl: cfg.baseUrl,
+    defaultModels: cfg.defaultModels,
+
+    async checkKey(apiKey: string, dispatcher?: Dispatcher): Promise<KeyCheckResult> {
+      try {
+        const res = await fetch(`${cfg.baseUrl}/models`, {
+          headers: { ...authHeader(apiKey), ...(cfg.extraHeaders?.() ?? {}) },
+          signal: AbortSignal.timeout(10_000),
+          dispatcher,
+        } as RequestInit & { dispatcher?: Dispatcher });
+        if (res.ok) return { ok: true };
+        return classifyHttpError(res.status);
+      } catch (err) {
+        return { ok: false, reason: "network", message: (err as Error).message };
+      }
+    },
+
+    async chatCompletion(
+      req: ChatRequest,
+      apiKey: string,
+      dispatcher?: Dispatcher,
+      signal?: AbortSignal,
+    ): Promise<UpstreamResponse> {
+      const res = await fetch(`${cfg.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: req.stream ? "text/event-stream" : "application/json",
+          ...authHeader(apiKey),
+          ...(cfg.extraHeaders?.() ?? {}),
+        },
+        body: JSON.stringify(req),
+        signal,
+        dispatcher,
+      } as RequestInit & { dispatcher?: Dispatcher });
+      return { status: res.status, headers: res.headers, body: res.body };
+    },
+  };
+}
