@@ -8,16 +8,46 @@
 </head>
 <body>
   <header>
-    <h1>llm-gate</h1>
+    <div class="brand">
+      <span class="logo">⚡</span>
+      <strong>llm-gate</strong>
+      <span class="version">v0.2.0</span>
+    </div>
     <nav>
-      <button data-tab="proxies" class="active">Proxies</button>
-      <button data-tab="providers">Providers</button>
-      <button data-tab="about">About</button>
+      <button data-tab="dashboard" class="active">Обзор</button>
+      <button data-tab="proxies">Прокси</button>
+      <button data-tab="providers">Провайдеры</button>
+      <button data-tab="setup">Подключение</button>
     </nav>
+    <div id="status-pill" class="status-pill" title="Общий статус">—</div>
   </header>
 
   <main>
-    <section id="tab-proxies" class="tab active">
+
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab active">
+      <h2>Обзор</h2>
+      <div class="stat-grid" id="stat-grid">
+        <div class="stat-card"><div class="stat-num" id="stat-requests">—</div><div class="stat-label">Всего запросов</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-keys-alive">—</div><div class="stat-label">Живых ключей</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-proxies-alive">—</div><div class="stat-label">Живых прокси</div></div>
+        <div class="stat-card"><div class="stat-num" id="stat-providers-enabled">—</div><div class="stat-label">Включённых провайдеров</div></div>
+      </div>
+
+      <h3>По провайдерам</h3>
+      <table id="per-provider-table">
+        <thead><tr><th>Провайдер</th><th>Ключей</th><th>Живых</th><th>Мёртвых</th><th>Запросов</th></tr></thead>
+        <tbody></tbody>
+      </table>
+
+      <div class="actions-row">
+        <button id="refresh-all" class="secondary">⟳ Обновить</button>
+        <button id="run-healthcheck" class="secondary">Прогнать health-check сейчас</button>
+      </div>
+    </section>
+
+    <!-- PROXIES -->
+    <section id="tab-proxies" class="tab">
       <h2>Прокси</h2>
       <p class="hint">Для России: добавьте свой VPS, платный прокси или локальный SOCKS5 от VPN-клиента.
         Поддерживаются <code>http://</code>, <code>https://</code>, <code>socks5://</code>, <code>socks5h://</code> (с DNS через прокси — рекомендуется).</p>
@@ -27,7 +57,6 @@
         <input name="url" placeholder="socks5h://user:pass@host:port" required />
         <button type="submit">Добавить и проверить</button>
       </form>
-      <div id="proxy-form-result" class="result"></div>
 
       <table id="proxies-table">
         <thead><tr>
@@ -35,32 +64,71 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+      <div id="proxies-empty" class="empty" hidden>
+        <p>Прокси не настроены.</p>
+        <p class="muted">Из России без прокси большинство провайдеров недоступны.
+          Добавьте свой SOCKS5 от V2Ray / Outline / Shadowsocks (обычно <code>socks5h://127.0.0.1:1080</code>)
+          или платный HTTP-прокси.</p>
+      </div>
     </section>
 
+    <!-- PROVIDERS -->
     <section id="tab-providers" class="tab">
       <h2>Провайдеры и ключи</h2>
 
       <form id="provider-form">
         <select name="kind" required></select>
         <select name="proxy_id"><option value="">Без прокси</option></select>
-        <input name="priority" type="number" value="100" min="1" max="999" />
+        <input name="priority" type="number" value="100" min="1" max="999" title="Приоритет (ниже = раньше)" />
         <button type="submit">Добавить провайдера</button>
       </form>
-      <div id="provider-form-result" class="result"></div>
 
       <div id="providers-list"></div>
+      <div id="providers-empty" class="empty" hidden>
+        <p>Провайдеры не добавлены.</p>
+        <p class="muted">Начните с NVIDIA NIM — самый щедрый бесплатный лимит (40 req/min).
+          Зарегистрируйтесь на <a href="https://build.nvidia.com" target="_blank" rel="noopener">build.nvidia.com</a>,
+          получите ключ <code>nvapi-…</code> и добавьте его выше.</p>
+      </div>
     </section>
 
-    <section id="tab-about" class="tab">
-      <h2>О llm-gate</h2>
-      <p>OpenAI-совместимый локальный прокси для бесплатных LLM-провайдеров с поддержкой HTTP/SOCKS-прокси,
-        авто-ротацией ключей и health-check'ами.</p>
-      <p>Документация: <a href="https://github.com/" target="_blank" rel="noopener">GitHub</a></p>
-      <h3>Endpoint для инструментов</h3>
-      <pre><code>OPENAI_BASE_URL=http://127.0.0.1:8082/v1
-OPENAI_API_KEY=any</code></pre>
+    <!-- SETUP -->
+    <section id="tab-setup" class="tab">
+      <h2>Подключение инструментов</h2>
+      <p class="hint">Скопируйте подходящую команду — токен и адрес уже подставлены.</p>
+
+      <div class="setup-card">
+        <h3>Claude Code</h3>
+        <pre><code id="setup-claude">…</code></pre>
+        <button class="secondary copy-btn" data-copy="setup-claude">Скопировать</button>
+      </div>
+
+      <div class="setup-card">
+        <h3>Cursor / Hermes / OpenAI-совместимый клиент</h3>
+        <pre><code id="setup-openai">…</code></pre>
+        <button class="secondary copy-btn" data-copy="setup-openai">Скопировать</button>
+      </div>
+
+      <div class="setup-card">
+        <h3>Прямой curl-тест</h3>
+        <pre><code id="setup-curl">…</code></pre>
+        <button class="secondary copy-btn" data-copy="setup-curl">Скопировать</button>
+      </div>
+
+      <div class="setup-card">
+        <h3>Эндпоинты</h3>
+        <table class="endpoint-table">
+          <tr><td><strong>OpenAI base</strong></td><td><code id="ep-openai">—</code></td></tr>
+          <tr><td><strong>Anthropic base</strong></td><td><code id="ep-anthropic">—</code></td></tr>
+          <tr><td><strong>Admin base</strong></td><td><code id="ep-admin">—</code></td></tr>
+          <tr><td><strong>Auth token</strong></td><td id="ep-auth"><code>не требуется</code></td></tr>
+        </table>
+      </div>
     </section>
+
   </main>
+
+  <div id="toasts"></div>
 
   <script src="./app.js" type="module"></script>
 </body>

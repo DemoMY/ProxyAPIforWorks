@@ -2,24 +2,12 @@ import type { DB } from "../db.js";
 import { SecretBox } from "../crypto.js";
 import { getProvider } from "../providers/registry.js";
 import type { ProviderKind } from "../providers/base.js";
-import { checkProxy, createDispatcher } from "../proxy/dispatcher.js";
+import { checkProxy } from "../proxy/dispatcher.js";
+import { DispatcherCache } from "../proxy/cache.js";
 
-type ProviderRow = {
-  id: string;
-  kind: ProviderKind;
-  proxy_id: string | null;
-};
-
-type KeyRow = {
-  id: string;
-  provider_id: string;
-  key_encrypted: string;
-};
-
-type ProxyRow = {
-  id: string;
-  url_encrypted: string;
-};
+type ProviderRow = { id: string; kind: ProviderKind; proxy_id: string | null };
+type KeyRow = { id: string; provider_id: string; key_encrypted: string };
+type ProxyRow = { id: string; url_encrypted: string };
 
 export class HealthChecker {
   private timer: NodeJS.Timeout | null = null;
@@ -27,6 +15,7 @@ export class HealthChecker {
   constructor(
     private db: DB,
     private box: SecretBox,
+    private dispatchers: DispatcherCache,
     private intervalMs: number,
   ) {}
 
@@ -67,6 +56,7 @@ export class HealthChecker {
         r.error ?? null,
         proxyId,
       );
+    this.dispatchers.invalidate(proxyId);
   }
 
   async checkAllKeys(): Promise<void> {
@@ -74,16 +64,18 @@ export class HealthChecker {
       .prepare(`SELECT id, kind, proxy_id FROM providers WHERE enabled = 1`)
       .all() as ProviderRow[];
 
-    for (const prov of providers) {
-      const provider = getProvider(prov.kind);
-      const proxyUrl = prov.proxy_id ? this.getProxyUrl(prov.proxy_id) : null;
-      const dispatcher = createDispatcher(proxyUrl);
+    await Promise.all(providers.map((prov) => this.checkKeysFor(prov)));
+  }
 
-      const keys = this.db
-        .prepare(`SELECT id, provider_id, key_encrypted FROM api_keys WHERE provider_id = ?`)
-        .all(prov.id) as KeyRow[];
+  private async checkKeysFor(prov: ProviderRow): Promise<void> {
+    const provider = getProvider(prov.kind);
+    const dispatcher = this.dispatchers.get(prov.proxy_id);
+    const keys = this.db
+      .prepare(`SELECT id, provider_id, key_encrypted FROM api_keys WHERE provider_id = ?`)
+      .all(prov.id) as KeyRow[];
 
-      for (const k of keys) {
+    await Promise.all(
+      keys.map(async (k) => {
         const apiKey = this.box.decrypt(k.key_encrypted);
         const r = await provider.checkKey(apiKey, dispatcher);
         if (r.ok) {
@@ -99,16 +91,7 @@ export class HealthChecker {
             .prepare(`UPDATE api_keys SET last_check_at=?, last_error=? WHERE id=?`)
             .run(Date.now(), r.message, k.id);
         }
-      }
-
-      dispatcher?.close().catch(() => {});
-    }
-  }
-
-  private getProxyUrl(proxyId: string): string | null {
-    const row = this.db.prepare(`SELECT id, url_encrypted FROM proxies WHERE id = ?`).get(proxyId) as
-      | ProxyRow
-      | undefined;
-    return row ? this.box.decrypt(row.url_encrypted) : null;
+      })
+    );
   }
 }

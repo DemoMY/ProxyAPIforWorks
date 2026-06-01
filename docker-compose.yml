@@ -1,0 +1,25 @@
+services:
+  llm-gate:
+    build: .
+    image: llm-gate:latest
+    container_name: llm-gate
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:7777:7777"
+      - "127.0.0.1:8082:8082"
+    volumes:
+      - llm-gate-data:/data
+    environment:
+      LLM_GATE_HOST: 0.0.0.0
+      LLM_GATE_AUTH_TOKEN: ${LLM_GATE_AUTH_TOKEN:?LLM_GATE_AUTH_TOKEN is required — generate with: openssl rand -hex 32}
+      LLM_GATE_UPSTREAM_TIMEOUT_MS: ${LLM_GATE_UPSTREAM_TIMEOUT_MS:-120000}
+      LLM_GATE_LOG_LEVEL: ${LLM_GATE_LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  llm-gate-data:

@@ -10,6 +10,7 @@ import { SecretBox } from "./crypto.js";
 import { Router } from "./core/router.js";
 import { KeyPool } from "./core/keypool.js";
 import { HealthChecker } from "./core/health.js";
+import { DispatcherCache } from "./proxy/cache.js";
 import { registerProxyApi } from "./api/proxy-api.js";
 import { registerAdminApi } from "./api/admin-api.js";
 
@@ -20,6 +21,7 @@ export type ServerHandles = {
   uiApp: FastifyInstance;
   proxyApp: FastifyInstance;
   health: HealthChecker;
+  dispatchers: DispatcherCache;
 };
 
 const HEALTH_PATHS = new Set(["/health", "/api/health"]);
@@ -44,8 +46,9 @@ function makeAuthHook(token: string | null) {
 export async function startServer(cfg: AppConfig, db: DB): Promise<ServerHandles> {
   const box = SecretBox.loadOrCreate(cfg.masterKeyPath);
   const pool = new KeyPool(db, box);
-  const router = new Router(db, box, pool);
-  const health = new HealthChecker(db, box, cfg.healthCheckIntervalMs);
+  const dispatchers = new DispatcherCache(db, box);
+  const router = new Router(db, box, pool, dispatchers);
+  const health = new HealthChecker(db, box, dispatchers, cfg.healthCheckIntervalMs);
 
   const authHook = makeAuthHook(cfg.authToken);
 
@@ -63,7 +66,7 @@ export async function startServer(cfg: AppConfig, db: DB): Promise<ServerHandles
   });
   await uiApp.register(fastifyCors, { origin: true });
   if (authHook) uiApp.addHook("onRequest", authHook);
-  registerAdminApi(uiApp, db, box, router, health);
+  registerAdminApi(uiApp, db, box, dispatchers, health, cfg);
 
   const uiRoot = resolveUiRoot();
   if (uiRoot) {
@@ -80,7 +83,7 @@ export async function startServer(cfg: AppConfig, db: DB): Promise<ServerHandles
 
   health.start();
 
-  return { uiApp, proxyApp, health };
+  return { uiApp, proxyApp, health, dispatchers };
 }
 
 function resolveUiRoot(): string | null {

@@ -1,11 +1,10 @@
-import type { Dispatcher } from "undici";
 import type { DB } from "../db.js";
 import { SecretBox } from "../crypto.js";
 import { KeyPool, parseRetryAfter } from "./keypool.js";
 import { getProvider } from "../providers/registry.js";
 import type { ChatRequest, ProviderKind, UpstreamResponse } from "../providers/base.js";
-import { createDispatcher } from "../proxy/dispatcher.js";
 import { resolveModelName, type ModelMap } from "../providers/model-aliases.js";
+import { DispatcherCache } from "../proxy/cache.js";
 
 type ProviderRow = {
   id: string;
@@ -17,16 +16,12 @@ type ProviderRow = {
   fallback_model: string | null;
 };
 
-type ProxyRow = {
-  id: string;
-  url_encrypted: string;
-};
-
 export type RouteAttempt = {
   providerId: string;
   providerKind: ProviderKind;
   keyId: string;
-  status: number | "error";
+  status: number | "error" | "aborted";
+  ms: number;
   error?: string;
 };
 
@@ -35,35 +30,12 @@ export type RouteResult =
   | { ok: false; attempts: RouteAttempt[]; error: string };
 
 export class Router {
-  private dispatcherCache = new Map<string, Dispatcher>();
-
-  constructor(private db: DB, private box: SecretBox, private pool: KeyPool) {}
-
-  private getProxyUrl(proxyId: string | null): string | null {
-    if (!proxyId) return null;
-    const row = this.db.prepare(`SELECT id, url_encrypted FROM proxies WHERE id = ?`).get(proxyId) as
-      | ProxyRow
-      | undefined;
-    if (!row) return null;
-    return this.box.decrypt(row.url_encrypted);
-  }
-
-  private getDispatcher(proxyId: string | null): Dispatcher | undefined {
-    if (!proxyId) return undefined;
-    const cached = this.dispatcherCache.get(proxyId);
-    if (cached) return cached;
-    const url = this.getProxyUrl(proxyId);
-    if (!url) return undefined;
-    const d = createDispatcher(url);
-    if (d) this.dispatcherCache.set(proxyId, d);
-    return d;
-  }
-
-  invalidateProxy(proxyId: string): void {
-    const d = this.dispatcherCache.get(proxyId);
-    if (d) d.close().catch(() => {});
-    this.dispatcherCache.delete(proxyId);
-  }
+  constructor(
+    private db: DB,
+    private box: SecretBox,
+    private pool: KeyPool,
+    private dispatchers: DispatcherCache,
+  ) {}
 
   private listProviders(): ProviderRow[] {
     return this.db
@@ -88,31 +60,44 @@ export class Router {
     }
 
     for (const prov of providers) {
+      if (signal?.aborted) {
+        return { ok: false, attempts, error: "request aborted by client" };
+      }
       const provider = getProvider(prov.kind);
-      const dispatcher = this.getDispatcher(prov.proxy_id);
+      const dispatcher = this.dispatchers.get(prov.proxy_id);
       const keys = this.pool.listAliveByProvider(prov.id, Date.now());
       const resolvedReq: ChatRequest = { ...req, model: this.resolveModel(prov, req.model) };
 
       for (const key of keys) {
+        if (signal?.aborted) {
+          return { ok: false, attempts, error: "request aborted by client" };
+        }
         const apiKey = this.pool.decrypt(key);
+        const started = Date.now();
         let resp: UpstreamResponse;
         try {
           resp = await provider.chatCompletion(resolvedReq, apiKey, dispatcher, signal);
         } catch (err) {
+          const isAbort = signal?.aborted || (err as Error).name === "AbortError";
           attempts.push({
             providerId: prov.id, providerKind: prov.kind, keyId: key.id,
-            status: "error", error: (err as Error).message,
+            status: isAbort ? "aborted" : "error",
+            ms: Date.now() - started,
+            error: (err as Error).message,
           });
+          if (isAbort) return { ok: false, attempts, error: "request aborted by client" };
           continue;
         }
 
+        const ms = Date.now() - started;
+
         if (resp.status >= 200 && resp.status < 300) {
           this.pool.markUsed(key.id);
-          attempts.push({ providerId: prov.id, providerKind: prov.kind, keyId: key.id, status: resp.status });
+          attempts.push({ providerId: prov.id, providerKind: prov.kind, keyId: key.id, status: resp.status, ms });
           return { ok: true, response: resp, attempts };
         }
 
-        attempts.push({ providerId: prov.id, providerKind: prov.kind, keyId: key.id, status: resp.status });
+        attempts.push({ providerId: prov.id, providerKind: prov.kind, keyId: key.id, status: resp.status, ms });
 
         if (resp.status === 429) {
           this.pool.markCooling(key.id, parseRetryAfter(resp.headers), "429 rate limit");

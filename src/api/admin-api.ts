@@ -6,13 +6,19 @@ import { SecretBox, maskProxyUrl, maskSecret } from "../crypto.js";
 import { checkProxy, parseProxyUrl } from "../proxy/dispatcher.js";
 import { getProvider, listSupportedProviders } from "../providers/registry.js";
 import type { ProviderKind } from "../providers/base.js";
-import type { Router } from "../core/router.js";
 import type { HealthChecker } from "../core/health.js";
+import type { DispatcherCache } from "../proxy/cache.js";
+import type { AppConfig } from "../config.js";
 import { getSetting, setSetting } from "../db.js";
 
 const ProxyInput = z.object({
   name: z.string().min(1).max(64),
   url: z.string().min(7),
+});
+
+const ProxyPatch = z.object({
+  name: z.string().min(1).max(64).optional(),
+  url: z.string().min(7).optional(),
 });
 
 const ProviderInput = z.object({
@@ -30,12 +36,18 @@ const KeyInput = z.object({
   key: z.string().min(8),
 });
 
+const KeyPatch = z.object({
+  label: z.string().min(1).max(64).optional(),
+  reset: z.boolean().optional(),
+});
+
 export function registerAdminApi(
   app: FastifyInstance,
   db: DB,
   box: SecretBox,
-  router: Router,
+  dispatchers: DispatcherCache,
   health: HealthChecker,
+  cfg: AppConfig,
 ): void {
   app.get("/api/health", async () => ({ status: "ok", service: "llm-gate-admin" }));
 
@@ -45,6 +57,81 @@ export function registerAdminApi(
       return { kind: k, displayName: p.displayName, defaultModels: p.defaultModels };
     }),
   }));
+
+  app.get("/api/setup", async () => {
+    const visibleHost = cfg.host === "0.0.0.0" || cfg.host === "::" ? "127.0.0.1" : cfg.host;
+    return {
+      endpoints: {
+        proxy_base: `http://${visibleHost}:${cfg.proxyPort}`,
+        openai_base: `http://${visibleHost}:${cfg.proxyPort}/v1`,
+        anthropic_base: `http://${visibleHost}:${cfg.proxyPort}`,
+        admin_base: `http://${visibleHost}:${cfg.uiPort}`,
+      },
+      auth: {
+        required: !!cfg.authToken,
+        token: cfg.authToken,
+      },
+      version: "0.2.0",
+    };
+  });
+
+  app.get("/api/stats", async () => {
+    const keyStats = db.prepare(
+      `SELECT status, COUNT(*) AS c FROM api_keys GROUP BY status`
+    ).all() as Array<{ status: string; c: number }>;
+    const proxyStats = db.prepare(
+      `SELECT status, COUNT(*) AS c FROM proxies GROUP BY status`
+    ).all() as Array<{ status: string; c: number }>;
+    const providerStats = db.prepare(
+      `SELECT enabled, COUNT(*) AS c FROM providers GROUP BY enabled`
+    ).all() as Array<{ enabled: number; c: number }>;
+    const totalRequests = (db.prepare(`SELECT COALESCE(SUM(uses_total), 0) AS s FROM api_keys`).get() as { s: number }).s;
+
+    const perProvider = db.prepare(
+      `SELECT p.id, p.kind, COUNT(k.id) AS key_count,
+              COALESCE(SUM(k.uses_total), 0) AS requests,
+              COALESCE(SUM(CASE WHEN k.status = 'alive' THEN 1 ELSE 0 END), 0) AS alive_keys,
+              COALESCE(SUM(CASE WHEN k.status = 'dead'  THEN 1 ELSE 0 END), 0) AS dead_keys
+       FROM providers p LEFT JOIN api_keys k ON k.provider_id = p.id
+       GROUP BY p.id ORDER BY p.priority`
+    ).all() as Array<{ id: string; kind: ProviderKind; key_count: number; requests: number; alive_keys: number; dead_keys: number }>;
+
+    const tally = (rows: Array<{ status?: string; enabled?: number; c: number }>, key: string) =>
+      rows.find((r) => String((r as Record<string, unknown>)[key === "enabled" ? "enabled" : "status"]) === key)?.c ?? 0;
+
+    return {
+      totals: {
+        requests: totalRequests,
+        keys: {
+          alive: tally(keyStats, "alive"),
+          cooling: tally(keyStats, "cooling"),
+          dead: tally(keyStats, "dead"),
+          unknown: tally(keyStats, "unknown"),
+          total: keyStats.reduce((a, r) => a + r.c, 0),
+        },
+        proxies: {
+          alive: tally(proxyStats, "alive"),
+          dead: tally(proxyStats, "dead"),
+          unknown: tally(proxyStats, "unknown"),
+          total: proxyStats.reduce((a, r) => a + r.c, 0),
+        },
+        providers: {
+          enabled: providerStats.find((r) => r.enabled === 1)?.c ?? 0,
+          disabled: providerStats.find((r) => r.enabled === 0)?.c ?? 0,
+          total: providerStats.reduce((a, r) => a + r.c, 0),
+        },
+      },
+      per_provider: perProvider.map((p) => ({
+        id: p.id,
+        kind: p.kind,
+        displayName: getProvider(p.kind).displayName,
+        keys: p.key_count,
+        alive_keys: p.alive_keys,
+        dead_keys: p.dead_keys,
+        requests: p.requests,
+      })),
+    };
+  });
 
   app.get("/api/proxies", async () => {
     const rows = db.prepare(`SELECT * FROM proxies ORDER BY created_at ASC`).all() as Array<{
@@ -83,19 +170,40 @@ export function registerAdminApi(
     return { id, check: checkResult };
   });
 
+  app.patch("/api/proxies/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const input = ProxyPatch.parse(req.body);
+    const sets: string[] = [];
+    const vals: unknown[] = [];
+    if (input.name !== undefined) { sets.push("name = ?"); vals.push(input.name); }
+    if (input.url !== undefined) {
+      const parsed = parseProxyUrl(input.url);
+      sets.push("url_encrypted = ?", "type = ?");
+      vals.push(box.encrypt(input.url), parsed.protocol);
+    }
+    if (sets.length === 0) return { ok: true };
+    vals.push(id);
+    db.prepare(`UPDATE proxies SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+    dispatchers.invalidate(id);
+    if (input.url !== undefined) {
+      await health.checkOneProxy(id, input.url);
+    }
+    reply.code(200);
+    return { ok: true };
+  });
+
   app.post("/api/proxies/:id/check", async (req) => {
     const { id } = req.params as { id: string };
     const row = db.prepare(`SELECT url_encrypted FROM proxies WHERE id = ?`).get(id) as
       | { url_encrypted: string } | undefined;
     if (!row) return { error: "not found" };
     await health.checkOneProxy(id, box.decrypt(row.url_encrypted));
-    router.invalidateProxy(id);
     return { ok: true };
   });
 
   app.delete("/api/proxies/:id", async (req) => {
     const { id } = req.params as { id: string };
-    router.invalidateProxy(id);
+    dispatchers.invalidate(id);
     db.prepare(`UPDATE providers SET proxy_id = NULL WHERE proxy_id = ?`).run(id);
     db.prepare(`DELETE FROM proxies WHERE id = ?`).run(id);
     return { ok: true };
@@ -197,11 +305,8 @@ export function registerAdminApi(
       return { error: "provider not found" };
     }
     const provider = getProvider(provRow.kind);
-    const proxyUrl = provRow.proxy_id ? getProxyUrlById(db, box, provRow.proxy_id) : null;
-    const { createDispatcher } = await import("../proxy/dispatcher.js");
-    const dispatcher = createDispatcher(proxyUrl);
+    const dispatcher = provRow.proxy_id ? dispatchers.get(provRow.proxy_id) : undefined;
     const check = await provider.checkKey(input.key, dispatcher);
-    dispatcher?.close().catch(() => {});
 
     const id = randomUUID();
     db.prepare(
@@ -216,26 +321,34 @@ export function registerAdminApi(
     return { id, check };
   });
 
+  app.patch("/api/keys/:id", async (req) => {
+    const { id } = req.params as { id: string };
+    const input = KeyPatch.parse(req.body);
+    if (input.label !== undefined) {
+      db.prepare(`UPDATE api_keys SET label = ? WHERE id = ?`).run(input.label, id);
+    }
+    if (input.reset) {
+      db.prepare(
+        `UPDATE api_keys SET status='unknown', cooling_until=NULL, last_error=NULL,
+         uses_total=0 WHERE id = ?`
+      ).run(id);
+    }
+    return { ok: true };
+  });
+
   app.delete("/api/keys/:id", async (req) => {
     const { id } = req.params as { id: string };
     db.prepare(`DELETE FROM api_keys WHERE id = ?`).run(id);
     return { ok: true };
   });
 
-  app.post("/api/keys/:id/check", async (req) => {
-    const { id } = req.params as { id: string };
+  app.post("/api/keys/:id/check", async () => {
     await health.checkAllKeys();
-    return { ok: true, id };
+    return { ok: true };
   });
 
   app.post("/api/healthcheck/run", async () => {
     await health.runCycle();
     return { ok: true };
   });
-}
-
-function getProxyUrlById(db: DB, box: SecretBox, id: string): string | null {
-  const row = db.prepare(`SELECT url_encrypted FROM proxies WHERE id = ?`).get(id) as
-    | { url_encrypted: string } | undefined;
-  return row ? box.decrypt(row.url_encrypted) : null;
 }
